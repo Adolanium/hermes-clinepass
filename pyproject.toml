@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hermes-clinepass"
+version = "1.1.0"
+description = "ClinePass model-provider plugin for Hermes Agent"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Adolanium" }]
+keywords = ["hermes", "hermes-agent", "clinepass", "llm", "provider"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+# Hermes Agent must already be installed (provides `providers`).
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/Adolanium/hermes-clinepass"
+Repository = "https://github.com/Adolanium/hermes-clinepass"
+Issues = "https://github.com/Adolanium/hermes-clinepass/issues"
+ClinePass = "https://cline.bot/cline-pass"
+Hermes = "https://github.com/NousResearch/hermes-agent"
+
+[project.entry-points."hermes_agent.plugins"]
+clinepass = "clinepass:register"
+
+[tool.setuptools.packages.find]
+include = ["clinepass*"]
+
+[tool.setuptools.package-data]
+clinepass = ["plugin.yaml"]

@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="hermes-clinepass">
+  <rect width="128" height="128" rx="24" fill="#12141a"/>
+  <rect x="8" y="8" width="112" height="112" rx="18" fill="none" stroke="#2a2f3a" stroke-width="2"/>
+  <text x="64" y="78" text-anchor="middle" font-family="ui-sans-serif, system-ui, -apple-system, Segoe UI, sans-serif" font-size="44" font-weight="600" fill="#e8eaed" letter-spacing="-1">CP</text>
+</svg>
