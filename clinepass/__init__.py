@@ -14,8 +14,20 @@ its live catalog at ``GET /api/v1/ai/cline/recommended-models`` (key
 
 from __future__ import annotations
 
+import json
+import logging
+import urllib.request
+
 from providers import register_provider
-from providers.base import ProviderProfile
+from providers.base import ProviderProfile, _profile_user_agent
+
+logger = logging.getLogger(__name__)
+
+# Public, no auth needed. Response is a dict with keys ``recommended``,
+# ``free``, ``clinePass`` and ``clineCloud``. Each is a list of
+# ``{"id": ..., "name": ..., "description": ..., "tags": [...]}``.
+RECOMMENDED_MODELS_URL = "https://api.cline.bot/api/v1/ai/cline/recommended-models"
+CATALOG_KEY = "clinePass"
 
 
 class ClinePassProfile(ProviderProfile):
@@ -28,33 +40,34 @@ class ClinePassProfile(ProviderProfile):
         base_url: str | None = None,
         timeout: float = 8.0,
     ) -> list[str] | None:
-        # GET /models on api.cline.bot returns 404, but the recommended-models
-        # endpoint advertises the live ClinePass catalog:
-        #   https://api.cline.bot/api/v1/ai/cline/recommended-models  (key "clinePass")
-        # modeled after the zai plugin's live-catalog fetch pattern.
-        import json
-        import urllib.request
+        # GET /models on api.cline.bot returns 404, so the base class probe
+        # is useless here. The recommended-models endpoint is the live
+        # catalog instead. It is public, so no api_key is sent. base_url is
+        # ignored on purpose: a user proxy for inference does not change
+        # where the catalog lives.
+        from hermes_cli.urllib_security import open_credentialed_url
 
-        url = "https://api.cline.bot/api/v1/ai/cline/recommended-models"
+        req = urllib.request.Request(RECOMMENDED_MODELS_URL)
+        req.add_header("Accept", "application/json")
+        req.add_header("User-Agent", _profile_user_agent())
         try:
-            req = urllib.request.Request(
-                url, headers={"Accept": "application/json", "User-Agent": "Hermes-Agent"}
-            )
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
+            with open_credentialed_url(req, timeout=timeout) as resp:
                 payload = json.loads(resp.read().decode())
-            block = payload.get("clinePass") if isinstance(payload, dict) else None
-            if isinstance(block, list):
-                ids = [
-                    m.get("id")
-                    for m in block
-                    if isinstance(m, dict) and isinstance(m.get("id"), str)
-                ]
-                if ids:
-                    return ids
-        except Exception:
-            pass
-        # Degrade silently to the curated fallback on any failure.
-        return None
+        except Exception as exc:
+            logger.debug("fetch_models(%s): %s", self.name, exc)
+            return None
+
+        block = payload.get(CATALOG_KEY) if isinstance(payload, dict) else None
+        if not isinstance(block, list):
+            return None
+        ids = [
+            m["id"]
+            for m in block
+            if isinstance(m, dict) and isinstance(m.get("id"), str) and m["id"]
+        ]
+        # Empty means the fetch is broken, not that there are no models.
+        # Return None so callers use fallback_models.
+        return ids or None
 
 
 clinepass = ClinePassProfile(
