@@ -6,8 +6,8 @@ MiniMax, MiMo, Qwen) behind an OpenAI-compatible Chat Completions API at
 (``cline-pass/<model>``) and pass through to the endpoint unchanged.
 
 Authentication is a bearer ``CLINE_API_KEY`` from the Cline account dashboard
-(Settings > API Keys). ``GET /models`` is a 404, but the gateway advertises
-its live catalog at ``GET /api/v1/ai/cline/recommended-models`` (key
+(Settings > API Keys). The generic model listing omits ClinePass IDs, but
+the gateway advertises its catalog at ``GET /api/v1/ai/cline/recommended-models`` (key
 ``clinePass``); ``fetch_models`` returns that, falling back to the curated
 ``fallback_models`` list on any failure.
 """
@@ -51,40 +51,16 @@ CURATED_MODELS: tuple[str, ...] = (
 
 
 def _register_validator_catalog() -> None:
-    """Publish CURATED_MODELS into hermes_cli.models._PROVIDER_MODELS.
+    """Publish known IDs into the static catalog used by Hermes' validator.
 
-    validate_requested_model hard-rejects model ids missing from both the
-    live /v1/models listing and the in-repo _PROVIDER_MODELS dict. api.cline.bot
-    now serves an aggregator listing (z-ai/*, anthropic/*, …) with no
-    cline-pass/* ids, so without this our ids always reject.
+    Provider discovery can run while models_catalog_static is still building
+    _PROVIDER_MODELS. If that dict is not available yet, defer registration
+    until the module's later list_providers call. The wrapper removes itself
+    when registration is retried. Both import orders are covered by fresh-
+    process tests against Hermes.
 
-    Timing: this plugin is imported by providers/ discovery, which
-    hermes_cli/models_catalog_static.py itself triggers at import time (its
-    CANONICAL_PROVIDERS auto-extend block, line ~356) — that runs while
-    hermes_cli.models_catalog_static is STILL mid-import (its _PROVIDER_MODELS
-    at line ~155 IS defined by then) and while hermes_cli.models is
-    mid-import too (it imported models_catalog_static at its line 31, before
-    defining anything). sys.modules["hermes_cli.models"] therefore exists but
-    has no _PROVIDER_MODELS yet, and a real import returns that same partial
-    module, so both paths raised AttributeError and were swallowed — the
-    /model validator then hard-rejected every cline-pass/* id (v1.2.0 bug).
-
-    Fix: register into hermes_cli.models_catalog_static, the module that OWNS
-    the dict. models.py re-exports it by reference (from-import binds the
-    same object), so one write serves both readers.
-
-    The window is deeper than "models.py mid-import": discovery is triggered
-    from models_catalog_static's own module init — _codex_curated_models()
-    (line ~73, BEFORE _PROVIDER_MODELS at ~155) → codex_models →
-    agent.model_metadata → providers.list_providers() → discovery → this
-    module. At that instant NEITHER _PROVIDER_MODELS exists, so both direct
-    targets fail. The guaranteed post-definition touchpoint is
-    models_catalog_static line ~361: its CANONICAL_PROVIDERS auto-extend
-    block calls providers.list_providers() again AFTER the dict is built.
-    So when both targets are missing, install a one-shot self-removing
-    wrapper around providers.list_providers: the auto-extend call triggers
-    it, registration lands, then the original function is restored. Still
-    re-asserted from fetch_models as belt-and-braces. Idempotent.
+    models.py shares the owning module's dict, so one write serves both
+    readers. Preserve IDs learned from the recommended feed on retries.
     """
     try:
         import sys
@@ -93,9 +69,11 @@ def _register_validator_catalog() -> None:
 
         def _register_into(mod) -> bool:
             try:
-                existing = mod._PROVIDER_MODELS.get("clinepass")
-                if existing != curated:
-                    mod._PROVIDER_MODELS["clinepass"] = curated
+                existing = mod._PROVIDER_MODELS.get("clinepass", [])
+                # Keep live-feed IDs through a later timeout or empty response.
+                merged = list(dict.fromkeys([*existing, *curated]))
+                if existing != merged:
+                    mod._PROVIDER_MODELS["clinepass"] = merged
                 return True
             except AttributeError:
                 return False
@@ -123,13 +101,8 @@ def _register_validator_catalog() -> None:
         except Exception:
             logger.debug("_PROVIDER_MODELS registration skipped (mid-import)", exc_info=True)
 
-        # Circular window (neither dict exists yet): arm the deferred hook on
-        # providers.list_providers. models_catalog_static's auto-extend block
-        # calls it AFTER its dict is built; the wrapper registers then and
-        # restores the original. list_providers is captured from the live
-        # providers module object — the from-import in models_catalog_static
-        # bound the ORIGINAL function there, so re-binding the module attr
-        # is exactly what that call site will invoke.
+        # The canonical-provider block imports list_providers after building
+        # the dict, so it picks up this wrapper and retries registration.
         try:
             import providers as _providers_mod
 
@@ -144,7 +117,7 @@ def _register_validator_catalog() -> None:
                         _providers_mod.list_providers = _orig_list
                     _register_validator_catalog()
                 finally:
-                    # Un-arm even on failure so a broken hook can't loop.
+                    # Restore this wrapper if registration did not already replace it.
                     if _providers_mod.list_providers is _armed_list_providers:
                         _providers_mod.list_providers = _orig_list
                 return _orig_list(*a, **k)
@@ -173,8 +146,8 @@ class ClinePassProfile(ProviderProfile):
         # code itself lives there), so the circular-import window is closed.
         _register_validator_catalog()
 
-        # GET /models on api.cline.bot returns 404, so the base class probe
-        # is useless here. The recommended-models endpoint is the live
+        # The generic model listing omits ClinePass IDs. The recommended
+        # models endpoint is the live
         # catalog instead. It is public, so no api_key is sent. base_url is
         # ignored on purpose: a user proxy for inference does not change
         # where the catalog lives.
@@ -251,11 +224,5 @@ def register() -> None:
 # Drop-in discovery imports this module and expects registration at import time.
 register()
 
-# Register eagerly: during gateway/CLI startup this module executes from
-# models_catalog_static's CANONICAL_PROVIDERS auto-extend block, while BOTH
-# hermes_cli.models and hermes_cli.models_catalog_static are still mid-import —
-# but the static module's _PROVIDER_MODELS (its line ~155) already exists, and
-# _register_validator_catalog targets that owning module first. models.py
-# re-exports the same dict object, so a direct `/model cline-pass/...` switch
-# validates correctly even if fetch_models never ran.
+# Publish before the first /model validation, including circular discovery.
 _register_validator_catalog()

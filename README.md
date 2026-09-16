@@ -61,6 +61,7 @@ Provider aliases: `clinepass`, `cline-pass`, `cline`.
 | Kimi K2.6 | `cline-pass/kimi-k2.6` |
 | DeepSeek V4 Pro | `cline-pass/deepseek-v4-pro` |
 | DeepSeek V4 Flash | `cline-pass/deepseek-v4-flash` |
+| DeepSeek V4.1 Flash | `cline-pass/deepseek-v4.1-flash` |
 | MiMo-V2.5-Pro | `cline-pass/mimo-v2.5-pro` |
 | MiMo-V2.5 | `cline-pass/mimo-v2.5` |
 | MiniMax M3 | `cline-pass/minimax-m3` |
@@ -70,7 +71,7 @@ Provider aliases: `clinepass`, `cline-pass`, `cline`.
 
 Default auxiliary model: `cline-pass/deepseek-v4-flash`.
 
-The gateway does not implement `GET /models`. The plugin reads the live catalog from `GET https://api.cline.bot/api/v1/ai/cline/recommended-models` (key `clinePass`) instead, so new models show up in the picker without a plugin update. The table above is the built-in fallback used when that request fails. See [ClinePass docs](https://docs.cline.bot/getting-started/clinepass).
+The gateway's generic model listing omits `cline-pass/*` IDs. The plugin reads the live catalog from `GET https://api.cline.bot/api/v1/ai/cline/recommended-models` (key `clinePass`) instead, so new models show up in the picker without a plugin update. The table above is the built-in fallback used when that request fails. Curated models are registered before `/model` validation; models learned from a successful catalog fetch remain recognized after a later refresh fails. See [ClinePass docs](https://docs.cline.bot/getting-started/clinepass).
 
 Usage-billing model ids (OpenRouter-style) work on the same host and key if you pass them with `-m`, for example `anthropic/claude-sonnet-4.6`.
 
