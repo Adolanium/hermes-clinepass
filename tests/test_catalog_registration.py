@@ -55,6 +55,22 @@ with tempfile.TemporaryDirectory(prefix="clinepass-catalog-") as temp:
         for model in profile.fallback_models:
             assert accepted(model), model
         assert not accepted("cline-pass/nonexistent-test-model")
+    elif scenario == "free":
+        from hermes_cli import urllib_security
+        free = "stealth/pixel-canary"
+        assert not accepted(free)
+        urllib_security.open_credentialed_url = lambda *args, **kwargs: io.BytesIO(
+            json.dumps({
+                "clinePass": [{"id": "cline-pass/kimi-k3"}],
+                "free": [{"id": free}],
+            }).encode())
+        picker = models.probe_profile_catalog("clinepass", profile, "test-only", profile.base_url)
+        assert free in picker, "free feed entry is missing from the Hermes picker"
+        assert accepted(free), "picker entry cannot be selected with /model"
+        urllib_security.open_credentialed_url = offline
+        assert profile.fetch_models(api_key="test-only") is None
+        assert accepted(free), "failed refresh discarded a previously learned free model"
+        assert not accepted("stealth/nonexistent-test-model")
     else:
         from hermes_cli import urllib_security
         future = "cline-pass/new-model-from-feed"
@@ -87,3 +103,7 @@ def test_curated_models_validate_on_fresh_startup(order):
 
 def test_live_catalog_survives_a_failed_refresh():
     run_probe('models', 'refresh')
+
+
+def test_free_catalog_models_appear_in_picker_and_validate():
+    run_probe('models', 'free')

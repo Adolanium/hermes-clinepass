@@ -140,6 +140,63 @@ def test_fetch_models_ignores_custom_base_url(profile, monkeypatch):
     assert seen["url"] == "https://api.cline.bot/api/v1/ai/cline/recommended-models"
 
 
+def test_fetch_models_includes_free_models_without_rewriting_ids(profile, monkeypatch):
+    import json
+
+    # Pixel Canary is a fixture for a rotating stealth entry, not a claim
+    # that Cline currently advertises or serves this model.
+    payload = {
+        "clinePass": [{"id": "cline-pass/kimi-k3"}],
+        "free": [
+            {"id": "stealth/pixel-canary"},
+            {"id": "cline-free/mimo-v2.6-flash"},
+            {"id": "stealth/pixel-canary"},
+            {"id": "cline-pass/kimi-k3"},
+            {"id": ""},
+            {"id": "   "},
+            {"id": None},
+            {"id": 42},
+            {"name": "missing id"},
+            "not-a-dict",
+        ],
+        "recommended": [{"id": "anthropic/claude-sonnet-4.6"}],
+        "clineCloud": [{"id": "cline-cloud/kimi-k3"}],
+    }
+    seen = _patch_fetch(monkeypatch, body=json.dumps(payload).encode())
+
+    assert profile.fetch_models(api_key="dummy") == [
+        "cline-pass/kimi-k3",
+        "stealth/pixel-canary",
+        "cline-free/mimo-v2.6-flash",
+    ]
+    assert "authorization" not in seen["headers"]
+
+
+@pytest.mark.parametrize("pass_block", [None, [], "unavailable"])
+def test_fetch_models_keeps_free_models_when_pass_block_is_unavailable(
+    profile, monkeypatch, pass_block
+):
+    import json
+
+    _patch_fetch(
+        monkeypatch,
+        body=json.dumps({
+            "clinePass": pass_block,
+            "free": [{"id": "stealth/space-bunny-alpha"}],
+        }).encode(),
+    )
+
+    assert profile.fetch_models(api_key="dummy") == ["stealth/space-bunny-alpha"]
+
+
+def test_fetch_models_keeps_pass_models_when_free_block_is_malformed(profile, monkeypatch):
+    _patch_fetch(
+        monkeypatch,
+        body=b'{"clinePass": [{"id": "cline-pass/kimi-k3"}], "free": "nope"}',
+    )
+    assert profile.fetch_models(api_key="dummy") == ["cline-pass/kimi-k3"]
+
+
 @pytest.mark.parametrize(
     "body",
     [

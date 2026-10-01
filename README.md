@@ -71,7 +71,9 @@ Provider aliases: `clinepass`, `cline-pass`, `cline`.
 
 Default auxiliary model: `cline-pass/deepseek-v4-flash`.
 
-The gateway's generic model listing omits `cline-pass/*` IDs. The plugin reads the live catalog from `GET https://api.cline.bot/api/v1/ai/cline/recommended-models` (key `clinePass`) instead, so new models show up in the picker without a plugin update. The table above is the built-in fallback used when that request fails. Curated models are registered before `/model` validation; models learned from a successful catalog fetch remain recognized after a later refresh fails. See [ClinePass docs](https://docs.cline.bot/getting-started/clinepass).
+The gateway's generic model listing omits `cline-pass/*` IDs. The plugin reads the `clinePass` and `free` blocks from [Cline's live catalog](https://api.cline.bot/api/v1/ai/cline/recommended-models), matching [Cline's ClinePass picker](https://github.com/cline/cline/blob/8eee168b80127b0c94bad849323754b5864865e7/sdk/packages/llms/src/catalog/catalog-cline-recommended.ts). Free models keep their exact gateway IDs, including `stealth/*` and `cline-free/*`; the plugin does not add a `cline-pass/` prefix. New pass and free models appear without a plugin update when Cline advertises them in those blocks.
+
+The table above is the built-in fallback used when that request fails. It contains pass models only because free offerings rotate. Curated models are registered before `/model` validation; pass and free models learned from a successful catalog fetch remain recognized after a later refresh fails. Catalog discovery does not verify account access or successful inference. See [ClinePass docs](https://docs.cline.bot/getting-started/clinepass).
 
 Usage-billing model ids (OpenRouter-style) work on the same host and key if you pass them with `-m`, for example `anthropic/claude-sonnet-4.6`.
 
