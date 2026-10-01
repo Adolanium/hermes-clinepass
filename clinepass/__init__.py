@@ -2,14 +2,16 @@
 
 ClinePass serves curated open-weight coding models (GLM, Kimi, DeepSeek,
 MiniMax, MiMo, Qwen) behind an OpenAI-compatible Chat Completions API at
-``https://api.cline.bot/api/v1``. Model IDs are namespaced
-(``cline-pass/<model>``) and pass through to the endpoint unchanged.
+``https://api.cline.bot/api/v1``. Pass model IDs are namespaced
+(``cline-pass/<model>``); free models use their own gateway IDs. Both pass
+through to the endpoint unchanged.
 
 Authentication is a bearer ``CLINE_API_KEY`` from the Cline account dashboard
 (Settings > API Keys). The generic model listing omits ClinePass IDs, but
-the gateway advertises its catalog at ``GET /api/v1/ai/cline/recommended-models`` (key
-``clinePass``); ``fetch_models`` returns that, falling back to the curated
-``fallback_models`` list on any failure.
+the gateway advertises its catalog at ``GET /api/v1/ai/cline/recommended-models`` (keys
+``clinePass`` and ``free``); ``fetch_models`` returns both blocks, preserving
+their gateway IDs, and falls back to the curated ``fallback_models`` list
+on any failure.
 """
 
 from __future__ import annotations
@@ -27,7 +29,9 @@ logger = logging.getLogger(__name__)
 # ``free``, ``clinePass`` and ``clineCloud``. Each is a list of
 # ``{"id": ..., "name": ..., "description": ..., "tags": [...]}``.
 RECOMMENDED_MODELS_URL = "https://api.cline.bot/api/v1/ai/cline/recommended-models"
-CATALOG_KEY = "clinePass"
+# Cline's own ClinePass picker includes free models alongside the pass catalog.
+# Free IDs may use other namespaces and must pass through unchanged.
+CATALOG_KEYS = ("clinePass", "free")
 
 # Curated catalog — the picker list and the /model validator's private
 # _PROVIDER_MODELS registry (see _register_validator_catalog below).
@@ -163,21 +167,26 @@ class ClinePassProfile(ProviderProfile):
             logger.debug("fetch_models(%s): %s", self.name, exc)
             return None
 
-        block = payload.get(CATALOG_KEY) if isinstance(payload, dict) else None
-        if not isinstance(block, list):
+        if not isinstance(payload, dict):
             return None
-        ids = [
-            m["id"]
-            for m in block
-            if isinstance(m, dict) and isinstance(m.get("id"), str) and m["id"]
-        ]
+        ids: list[str] = []
+        for key in CATALOG_KEYS:
+            block = payload.get(key)
+            if not isinstance(block, list):
+                continue
+            ids.extend(
+                m["id"]
+                for m in block
+                if isinstance(m, dict) and isinstance(m.get("id"), str) and m["id"].strip()
+            )
+        ids = list(dict.fromkeys(ids))
         if not ids:
             # Empty means the fetch is broken, not that there are no models.
             # Return None so callers use fallback_models.
             return None
         # Self-heal: the live feed can gain ids the curated list predates.
         # Merge them into the registered validator catalog so a brand-new
-        # cline-pass/* model validates on first try; otherwise the /model
+        # pass or free model validates on first try; otherwise the /model
         # validator's curated-catalog soft-accept check would reject it
         # until the plugin shipped an update. Mutates the same dict that
         # models.py and models_catalog_static share.
