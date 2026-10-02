@@ -33,7 +33,7 @@ RECOMMENDED_MODELS_URL = "https://api.cline.bot/api/v1/ai/cline/recommended-mode
 # Free IDs may use other namespaces and must pass through unchanged.
 CATALOG_KEYS = ("clinePass", "free")
 
-# Curated catalog — the picker list and the /model validator's private
+# Curated catalog - the picker list and the /model validator's private
 # _PROVIDER_MODELS registry (see _register_validator_catalog below).
 CURATED_MODELS: tuple[str, ...] = (
     "cline-pass/glm-5.3-flash",
@@ -205,6 +205,44 @@ class ClinePassProfile(ProviderProfile):
             logger.debug("clinepass: live-catalog merge skipped", exc_info=True)
         return ids
 
+    @staticmethod
+    def transform_response(response):
+        """Unwrap the ClinePass envelope ONLY when the top level has no choices.
+
+        The gateway returns an OpenAI-compatible ChatCompletion that ALSO
+        carries extra ``data``/``success`` keys (the SDK parks them in
+        ``model_extra``, so ``response.data`` is a truthy dict and
+        ``response.choices`` is None). Verified against the live API
+        2026-10-02: non-streaming completions are still double-wrapped::
+
+            {"success": true, "data": {"choices": [...], "usage": {...}}}
+
+        With ``streaming: false`` in Hermes (or any non-streaming code
+        path: cron fallbacks, auxiliary clients), the caller reads
+        ``response.choices[0]`` and fails with
+        "response has no 'choices' attribute" after exhausting retries.
+        Blindly returning ``response.data`` instead would break again the
+        moment the gateway stops wrapping. This handles both conditionally.
+        """
+        # 1) Normal OpenAI shape - keep as-is.
+        if getattr(response, "choices", None) is not None:
+            return response
+
+        # 2) Envelope shape - the payload lives under `.data` / dict["data"].
+        data = getattr(response, "data", None)
+        if data is None and isinstance(response, dict):
+            data = response.get("data")
+
+        if data is not None:
+            if getattr(data, "choices", None) is not None:
+                return data
+            if isinstance(data, dict) and "choices" in data:
+                return data
+
+        # 3) Streaming responses (AsyncStream/Stream) have no choices yet -
+        #    pass them through untouched so the caller can iterate chunks.
+        return response
+
 
 clinepass = ClinePassProfile(
     name="clinepass",
@@ -228,6 +266,103 @@ clinepass = ClinePassProfile(
 def register() -> None:
     """Entry point used by pip installs and explicit loaders."""
     register_provider(clinepass)
+
+    # Wrap chat.completions.create() so every call has the ClinePass
+    # `{"data": {...}}` envelope stripped before the caller tries to read
+    # `response.choices[0]`. Covers BOTH the main chat path
+    # (agent/chat_completion_helpers.py) and the auxiliary vision path
+    # (agent/auxiliary_client.py).
+    try:
+        from openai import OpenAI, AsyncOpenAI  # type: ignore
+    except Exception:  # pragma: no cover - openai not installed
+        return
+
+    # --- Class-level patch (MUST come first) -----------------------------
+    # Instance-level patching (below) misses any client built *before* this
+    # plugin loaded - e.g. a cached client held by the cron scheduler or the
+    # auxiliary client cache. Those clients then return the raw
+    # `{"data": {...}, "status": 200}` envelope, the agent sees
+    # "response has no 'choices' attribute" and the run dies after 3
+    # retries. Patching the class method covers every instance, old or new.
+    try:
+        from openai.resources.chat.completions import (  # type: ignore
+            AsyncCompletions,
+            Completions,
+        )
+
+        _orig_cls_create = Completions.create
+
+        def _cls_create(self, *args, **kwargs):
+            return ClinePassProfile.transform_response(
+                _orig_cls_create(self, *args, **kwargs)
+            )
+
+        Completions.create = _cls_create  # type: ignore[method-assign]
+
+        _orig_cls_acreate = AsyncCompletions.create
+
+        async def _cls_acreate(self, *args, **kwargs):
+            return ClinePassProfile.transform_response(
+                await _orig_cls_acreate(self, *args, **kwargs)
+            )
+
+        AsyncCompletions.create = _cls_acreate  # type: ignore[method-assign]
+    except Exception:  # pragma: no cover - keep instance patch as fallback
+        pass
+
+    # Drop any client cached before the patch was applied so the next
+    # request rebuilds it (belt and braces with the class-level patch).
+    try:
+        from agent.auxiliary_client import _evict_cached_clients  # type: ignore
+
+        _evict_cached_clients("clinepass")
+    except Exception:  # pragma: no cover
+        pass
+
+    def _patch_completions(completions):
+        if completions is None:
+            return
+        _original_create = completions.create
+
+        def _create(*cargs, **ckwargs):
+            response = _original_create(*cargs, **ckwargs)
+            return ClinePassProfile.transform_response(response)
+
+        # Preserve attribute access for tooling that introspects the method.
+        try:
+            _create.__wrapped__ = _original_create  # type: ignore[attr-defined]
+        except Exception:
+            pass
+        completions.create = _create
+
+    def _patch_sync_init(self, *args, **kwargs):
+        _original_sync_init(self, *args, **kwargs)
+        _patch_completions(getattr(getattr(self, "chat", None), "completions", None))
+
+    def _patch_async_init(self, *args, **kwargs):
+        _original_async_init(self, *args, **kwargs)
+        completions = getattr(getattr(self, "chat", None), "completions", None)
+        if completions is None:
+            return
+        _original_create = completions.create
+        # AsyncOpenAI's completions.create is itself a coroutine - wrap it.
+        async def _acreate(*acargs, **ackwargs):
+            r = await _original_create(*acargs, **ackwargs)
+            return ClinePassProfile.transform_response(r)
+        try:
+            _acreate.__wrapped__ = _original_create  # type: ignore[attr-defined]
+        except Exception:
+            pass
+        completions.create = _acreate
+
+    _original_sync_init = OpenAI.__init__
+    OpenAI.__init__ = _patch_sync_init  # type: ignore[assignment]
+
+    try:
+        _original_async_init = AsyncOpenAI.__init__
+        AsyncOpenAI.__init__ = _patch_async_init  # type: ignore[assignment]
+    except Exception:
+        pass
 
 
 # Drop-in discovery imports this module and expects registration at import time.
