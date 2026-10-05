@@ -33,8 +33,7 @@ RECOMMENDED_MODELS_URL = "https://api.cline.bot/api/v1/ai/cline/recommended-mode
 # Free IDs may use other namespaces and must pass through unchanged.
 CATALOG_KEYS = ("clinePass", "free")
 
-# Curated catalog — the picker list and the /model validator's private
-# _PROVIDER_MODELS registry (see _register_validator_catalog below).
+# Curated fallback for the provider profile when live discovery is unavailable.
 CURATED_MODELS: tuple[str, ...] = (
     "cline-pass/glm-5.3-flash",
     "cline-pass/glm-5.3",
@@ -54,87 +53,6 @@ CURATED_MODELS: tuple[str, ...] = (
 )
 
 
-def _register_validator_catalog() -> None:
-    """Publish known IDs into the static catalog used by Hermes' validator.
-
-    Provider discovery can run while models_catalog_static is still building
-    _PROVIDER_MODELS. If that dict is not available yet, defer registration
-    until the module's later list_providers call. The wrapper removes itself
-    when registration is retried. Both import orders are covered by fresh-
-    process tests against Hermes.
-
-    models.py shares the owning module's dict, so one write serves both
-    readers. Preserve IDs learned from the recommended feed on retries.
-    """
-    try:
-        import sys
-
-        curated = list(CURATED_MODELS)
-
-        def _register_into(mod) -> bool:
-            try:
-                existing = mod._PROVIDER_MODELS.get("clinepass", [])
-                # Keep live-feed IDs through a later timeout or empty response.
-                merged = list(dict.fromkeys([*existing, *curated]))
-                if existing != merged:
-                    mod._PROVIDER_MODELS["clinepass"] = merged
-                return True
-            except AttributeError:
-                return False
-
-        # Preferred target: the owning module, when its dict is live.
-        static_mod = sys.modules.get("hermes_cli.models_catalog_static")
-        if static_mod is None:
-            try:
-                from hermes_cli import models_catalog_static as static_mod
-            except Exception:
-                static_mod = None
-        if static_mod is not None and _register_into(static_mod):
-            return
-
-        # Fallback: the re-exporting module (post-import callers). If both
-        # dicts are live, prefer the owner so identity is guaranteed.
-        mod = sys.modules.get("hermes_cli.models")
-        if mod is not None and _register_into(mod):
-            return
-        try:
-            from hermes_cli import models as _hermes_models
-
-            if _register_into(_hermes_models):
-                return
-        except Exception:
-            logger.debug("_PROVIDER_MODELS registration skipped (mid-import)", exc_info=True)
-
-        # The canonical-provider block imports list_providers after building
-        # the dict, so it picks up this wrapper and retries registration.
-        try:
-            import providers as _providers_mod
-
-            if getattr(_providers_mod.list_providers, "_clinepass_arm", False):
-                return  # already armed, don't double-wrap
-            _orig_list = _providers_mod.list_providers
-
-            def _armed_list_providers(*a, **k):
-                try:
-                    _restore = _providers_mod.list_providers is _armed_list_providers
-                    if _restore:
-                        _providers_mod.list_providers = _orig_list
-                    _register_validator_catalog()
-                finally:
-                    # Restore this wrapper if registration did not already replace it.
-                    if _providers_mod.list_providers is _armed_list_providers:
-                        _providers_mod.list_providers = _orig_list
-                return _orig_list(*a, **k)
-
-            _armed_list_providers._clinepass_arm = True
-            _providers_mod.list_providers = _armed_list_providers
-            logger.debug("clinepass: list_providers hook armed for deferred _PROVIDER_MODELS registration")
-        except Exception:
-            logger.debug("clinepass: could not arm list_providers hook", exc_info=True)
-    except Exception:
-        logger.debug("_PROVIDER_MODELS registration skipped", exc_info=True)
-
-
 class ClinePassProfile(ProviderProfile):
     """ClinePass OpenAI-compat gateway with a live-recommended-models catalog."""
 
@@ -145,11 +63,6 @@ class ClinePassProfile(ProviderProfile):
         base_url: str | None = None,
         timeout: float = 8.0,
     ) -> list[str] | None:
-        # Re-assert the validator catalog every time the picker asks for
-        # models: by then hermes_cli.models is fully imported (the picker
-        # code itself lives there), so the circular-import window is closed.
-        _register_validator_catalog()
-
         # The generic model listing omits ClinePass IDs. The recommended
         # models endpoint is the live
         # catalog instead. It is public, so no api_key is sent. base_url is
@@ -184,25 +97,6 @@ class ClinePassProfile(ProviderProfile):
             # Empty means the fetch is broken, not that there are no models.
             # Return None so callers use fallback_models.
             return None
-        # Self-heal: the live feed can gain ids the curated list predates.
-        # Merge them into the registered validator catalog so a brand-new
-        # pass or free model validates on first try; otherwise the /model
-        # validator's curated-catalog soft-accept check would reject it
-        # until the plugin shipped an update. Mutates the same dict that
-        # models.py and models_catalog_static share.
-        try:
-            import sys
-
-            static_mod = sys.modules.get("hermes_cli.models_catalog_static")
-            models_mod = sys.modules.get("hermes_cli.models")
-            target = static_mod if static_mod is not None and hasattr(static_mod, "_PROVIDER_MODELS") else models_mod
-            if target is not None and hasattr(target, "_PROVIDER_MODELS"):
-                registry = target._PROVIDER_MODELS.get("clinepass")
-                if isinstance(registry, list):
-                    merged = registry + [mid for mid in ids if mid not in registry]
-                    target._PROVIDER_MODELS["clinepass"] = merged
-        except Exception:
-            logger.debug("clinepass: live-catalog merge skipped", exc_info=True)
         return ids
 
 
@@ -232,6 +126,3 @@ def register() -> None:
 
 # Drop-in discovery imports this module and expects registration at import time.
 register()
-
-# Publish before the first /model validation, including circular discovery.
-_register_validator_catalog()

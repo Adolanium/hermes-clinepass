@@ -8,6 +8,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 
 PROBE = r'''
+import copy
 import io
 import json
 import os
@@ -21,6 +22,7 @@ repo, order, scenario = sys.argv[1:]
 with tempfile.TemporaryDirectory(prefix="clinepass-catalog-") as temp:
     home = Path(temp)
     os.environ["HERMES_HOME"] = str(home)
+    os.environ["CLINE_API_KEY"] = "test-only"
     Path.home = classmethod(lambda cls: home)
     (home / "config.yaml").write_text("plugins:\n  enabled: [clinepass]\n")
     shutil.copytree(Path(repo) / "clinepass", home / "plugins/model-providers/clinepass",
@@ -44,7 +46,8 @@ with tempfile.TemporaryDirectory(prefix="clinepass-catalog-") as temp:
     profile = providers.get_provider_profile("clinepass")
     assert profile is not None
     assert models._PROVIDER_MODELS is models_catalog_static._PROVIDER_MODELS
-    assert providers.list_providers is original_list, "deferred hook was not removed"
+    assert providers.list_providers is original_list, "plugin replaced provider discovery"
+    original_catalog = copy.deepcopy(models_catalog_static._PROVIDER_MODELS)
     models.fetch_api_models = lambda *args, **kwargs: ["anthropic/other-model"]
 
     def accepted(model):
@@ -69,7 +72,8 @@ with tempfile.TemporaryDirectory(prefix="clinepass-catalog-") as temp:
         assert accepted(free), "picker entry cannot be selected with /model"
         urllib_security.open_credentialed_url = offline
         assert profile.fetch_models(api_key="test-only") is None
-        assert accepted(free), "failed refresh discarded a previously learned free model"
+        assert models.provider_model_ids("clinepass") == list(profile.fallback_models)
+        assert not accepted(free), "unavailable free models must not persist in the static catalog"
         assert not accepted("stealth/nonexistent-test-model")
     else:
         from hermes_cli import urllib_security
@@ -81,8 +85,11 @@ with tempfile.TemporaryDirectory(prefix="clinepass-catalog-") as temp:
         assert accepted(future)
         urllib_security.open_credentialed_url = offline
         assert profile.fetch_models(api_key="test-only") is None
-        assert accepted(future), "failed refresh discarded a previously learned model"
+        assert models.provider_model_ids("clinepass") == list(profile.fallback_models)
+        assert not accepted(future), "live models must not persist in the static catalog"
         assert not accepted("cline-pass/nonexistent-test-model")
+    assert models_catalog_static._PROVIDER_MODELS == original_catalog, "plugin changed the static catalog"
+    assert providers.list_providers is original_list, "plugin replaced provider discovery"
     print("catalog validation passed", order, scenario)
 '''
 
@@ -101,7 +108,7 @@ def test_curated_models_validate_on_fresh_startup(order):
     run_probe(order, 'startup')
 
 
-def test_live_catalog_survives_a_failed_refresh():
+def test_live_catalog_uses_curated_fallback_after_a_failed_refresh():
     run_probe('models', 'refresh')
 
 
